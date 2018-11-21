@@ -274,6 +274,9 @@ func convertField(curPkg *ProtoPackage, desc *descriptor.FieldDescriptorProto, m
 	case descriptor.FieldDescriptorProto_TYPE_GROUP,
 		descriptor.FieldDescriptorProto_TYPE_MESSAGE:
 		jsonSchemaType.Type = gojsonschema.TYPE_OBJECT
+		//去掉前面的. 添加引用
+		jsonSchemaType.Ref = desc.GetTypeName()[1:]
+
 		if desc.GetLabel() == descriptor.FieldDescriptorProto_LABEL_OPTIONAL {
 			jsonSchemaType.AdditionalProperties = []byte("true")
 		}
