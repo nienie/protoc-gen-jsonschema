@@ -181,6 +181,7 @@ func convertField(curPkg *ProtoPackage, desc *descriptor.FieldDescriptorProto, m
 	// Prepare a new jsonschema.Type for our eventual return value:
 	jsonSchemaType := &jsonschema.Type{
 		Properties: make(map[string]*jsonschema.Type),
+		Title:      desc.GetName(),
 	}
 
 	// Switch the types, and pick a JSONSchema equivalent:
@@ -215,7 +216,8 @@ func convertField(curPkg *ProtoPackage, desc *descriptor.FieldDescriptorProto, m
 		descriptor.FieldDescriptorProto_TYPE_FIXED64,
 		descriptor.FieldDescriptorProto_TYPE_SFIXED64,
 		descriptor.FieldDescriptorProto_TYPE_SINT64:
-		jsonSchemaType.OneOf = append(jsonSchemaType.OneOf, &jsonschema.Type{Type: gojsonschema.TYPE_INTEGER})
+		jsonSchemaType.Type = gojsonschema.TYPE_INTEGER
+		//jsonSchemaType.OneOf = append(jsonSchemaType.OneOf, &jsonschema.Type{Type: gojsonschema.TYPE_INTEGER})
 		if !disallowBigIntsAsStrings {
 			jsonSchemaType.OneOf = append(jsonSchemaType.OneOf, &jsonschema.Type{Type: gojsonschema.TYPE_STRING})
 		}
@@ -235,8 +237,9 @@ func convertField(curPkg *ProtoPackage, desc *descriptor.FieldDescriptorProto, m
 		}
 
 	case descriptor.FieldDescriptorProto_TYPE_ENUM:
-		jsonSchemaType.OneOf = append(jsonSchemaType.OneOf, &jsonschema.Type{Type: gojsonschema.TYPE_STRING})
-		jsonSchemaType.OneOf = append(jsonSchemaType.OneOf, &jsonschema.Type{Type: gojsonschema.TYPE_INTEGER})
+		//jsonSchemaType.OneOf = append(jsonSchemaType.OneOf, &jsonschema.Type{Type: gojsonschema.TYPE_STRING})
+		//jsonSchemaType.OneOf = append(jsonSchemaType.OneOf, &jsonschema.Type{Type: gojsonschema.TYPE_INTEGER})
+		jsonSchemaType.Type = gojsonschema.TYPE_INTEGER
 		if allowNullValues {
 			jsonSchemaType.OneOf = append(jsonSchemaType.OneOf, &jsonschema.Type{Type: gojsonschema.TYPE_NULL})
 		}
@@ -344,6 +347,8 @@ func convertMessageType(curPkg *ProtoPackage, msg *descriptor.DescriptorProto) (
 	jsonSchemaType := jsonschema.Type{
 		Properties: make(map[string]*jsonschema.Type),
 		Version:    jsonschema.Version,
+		//去掉前面的.
+		Description: curPkg.name[1:] + "." + msg.GetName(),
 	}
 
 	// Optionally allow NULL values:
@@ -384,8 +389,9 @@ func convertEnumType(enum *descriptor.EnumDescriptorProto) (jsonschema.Type, err
 	}
 
 	// Allow both strings and integers:
-	jsonSchemaType.OneOf = append(jsonSchemaType.OneOf, &jsonschema.Type{Type: "string"})
-	jsonSchemaType.OneOf = append(jsonSchemaType.OneOf, &jsonschema.Type{Type: "integer"})
+	//jsonSchemaType.OneOf = append(jsonSchemaType.OneOf, &jsonschema.Type{Type: "string"})
+	//jsonSchemaType.OneOf = append(jsonSchemaType.OneOf, &jsonschema.Type{Type: "integer"})
+	jsonSchemaType.Type = gojsonschema.TYPE_INTEGER
 
 	// Add the allowed values:
 	for _, enumValue := range enum.Value {
@@ -415,8 +421,12 @@ func convertFile(file *descriptor.FileDescriptorProto) ([]*plugin.CodeGeneratorR
 
 	// Generate standalone ENUMs:
 	if len(file.GetMessageType()) == 0 {
+		pkg, ok := globalPkg.relativelyLookupPackage(file.GetPackage())
+		if !ok {
+			return nil, fmt.Errorf("no such package found: %s", file.GetPackage())
+		}
 		for _, enum := range file.GetEnumType() {
-			jsonSchemaFileName := fmt.Sprintf("%s.jsonschema", enum.GetName())
+			jsonSchemaFileName := fmt.Sprintf("%s.schema.json", pkg.name[1:] + "." + enum.GetName())
 			logWithLevel(LOG_INFO, "Generating JSON-schema for stand-alone ENUM (%v) in file [%v] => %v", enum.GetName(), protoFileName, jsonSchemaFileName)
 			enumJsonSchema, err := convertEnumType(enum)
 			if err != nil {
@@ -445,7 +455,7 @@ func convertFile(file *descriptor.FileDescriptorProto) ([]*plugin.CodeGeneratorR
 			return nil, fmt.Errorf("no such package found: %s", file.GetPackage())
 		}
 		for _, msg := range file.GetMessageType() {
-			jsonSchemaFileName := fmt.Sprintf("%s.jsonschema", msg.GetName())
+			jsonSchemaFileName := fmt.Sprintf("%s.schema.json", pkg.name[1:] + "." + msg.GetName())
 			logWithLevel(LOG_INFO, "Generating JSON-schema for MESSAGE (%v) in file [%v] => %v", msg.GetName(), protoFileName, jsonSchemaFileName)
 			messageJSONSchema, err := convertMessageType(pkg, msg)
 			if err != nil {
