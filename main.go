@@ -446,7 +446,12 @@ func convertFile(file *descriptor.FileDescriptorProto) ([]*plugin.CodeGeneratorR
 		logWithLevel(LOG_WARN, "protoc-gen-jsonschema will create multiple ENUM schemas (%d) from one proto file (%v)", len(file.GetEnumType()), protoFileName)
 	}
 
-	// Generate standalone ENUMs:
+	pkg, ok := globalPkg.relativelyLookupPackage(file.GetPackage())
+	if !ok {
+		return nil, fmt.Errorf("no such package found: %s", file.GetPackage())
+	}
+
+	// Generate ENUMs:
 	for _, enum := range file.GetEnumType() {
 		jsonSchemaFileName := fmt.Sprintf("%s.schema.json", file.GetPackage()+"."+enum.GetName())
 		logWithLevel(LOG_INFO, "Generating JSON-schema for stand-alone ENUM (%v) in file [%v] => %v", enum.GetName(), protoFileName, jsonSchemaFileName)
@@ -470,14 +475,8 @@ func convertFile(file *descriptor.FileDescriptorProto) ([]*plugin.CodeGeneratorR
 			}
 		}
 	}
-	if len(file.GetMessageType()) == 0 {
-		return response, nil
-	}
-	// Otherwise process MESSAGES (packages):
-	pkg, ok := globalPkg.relativelyLookupPackage(file.GetPackage())
-	if !ok {
-		return nil, fmt.Errorf("no such package found: %s", file.GetPackage())
-	}
+
+	//Generate message json schema
 	for _, msg := range file.GetMessageType() {
 		jsonSchemaFileName := fmt.Sprintf("%s.schema.json", pkg.name[1:]+"."+msg.GetName())
 		logWithLevel(LOG_INFO, "Generating JSON-schema for MESSAGE (%v) in file [%v] => %v", msg.GetName(), protoFileName, jsonSchemaFileName)
@@ -520,7 +519,7 @@ func convert(req *plugin.CodeGeneratorRequest) (*plugin.CodeGeneratorResponse, e
 		//enum也记录保存下来
 		for _, enum := range file.GetEnumType() {
 			msg := &descriptor.DescriptorProto{
-				Name:   enum.Name,
+				Name:     enum.Name,
 				EnumType: []*descriptor.EnumDescriptorProto{enum,},
 			}
 			logWithLevel(LOG_DEBUG, "Loading a message type %s from package %s", msg.GetName(), file.GetPackage())
