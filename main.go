@@ -18,11 +18,11 @@ import (
 	"path"
 	"strings"
 
-	jsonschema "github.com/alecthomas/jsonschema"
-	proto "github.com/golang/protobuf/proto"
-	descriptor "github.com/golang/protobuf/protoc-gen-go/descriptor"
+	"github.com/alecthomas/jsonschema"
+	"github.com/golang/protobuf/proto"
+	"github.com/golang/protobuf/protoc-gen-go/descriptor"
 	plugin "github.com/golang/protobuf/protoc-gen-go/plugin"
-	gojsonschema "github.com/xeipuuv/gojsonschema"
+	"github.com/xeipuuv/gojsonschema"
 )
 
 const (
@@ -240,6 +240,9 @@ func convertField(curPkg *ProtoPackage, desc *descriptor.FieldDescriptorProto, m
 		//jsonSchemaType.OneOf = append(jsonSchemaType.OneOf, &jsonschema.Type{Type: gojsonschema.TYPE_STRING})
 		//jsonSchemaType.OneOf = append(jsonSchemaType.OneOf, &jsonschema.Type{Type: gojsonschema.TYPE_INTEGER})
 		jsonSchemaType.Type = gojsonschema.TYPE_INTEGER
+		//添加引用来源
+		jsonSchemaType.Ref = desc.GetTypeName()[1:]
+
 		if allowNullValues {
 			jsonSchemaType.OneOf = append(jsonSchemaType.OneOf, &jsonschema.Type{Type: gojsonschema.TYPE_NULL})
 		}
@@ -249,12 +252,32 @@ func convertField(curPkg *ProtoPackage, desc *descriptor.FieldDescriptorProto, m
 
 			// Each one has several values:
 			for _, enumValue := range enumDescriptor.Value {
-
+				/* 所有的枚举类型都展开
 				// Figure out the entire name of this field:
 				fullFieldName := fmt.Sprintf(".%v.%v", *msg.Name, *enumDescriptor.Name)
 
 				// If we find ENUM values for this field then put them into the JSONSchema list of allowed ENUM values:
 				if strings.HasSuffix(desc.GetTypeName(), fullFieldName) {
+					jsonSchemaType.Enum = append(jsonSchemaType.Enum, enumValue.Name)
+					jsonSchemaType.Enum = append(jsonSchemaType.Enum, enumValue.Number)
+				}
+				*/
+
+				jsonSchemaType.Enum = append(jsonSchemaType.Enum, enumValue.Name)
+				jsonSchemaType.Enum = append(jsonSchemaType.Enum, enumValue.Number)
+			}
+		}
+
+		//定义在message 外的enum，也展开
+		if len(msg.GetEnumType()) == 0 {
+			recordType, ok := curPkg.lookupType(desc.GetTypeName()[1:])
+			if !ok {
+				return nil, fmt.Errorf("no such message type named %s", desc.GetTypeName())
+			}
+			for _, enumDescriptor := range recordType.GetEnumType() {
+
+				// Each one has several values:
+				for _, enumValue := range enumDescriptor.Value {
 					jsonSchemaType.Enum = append(jsonSchemaType.Enum, enumValue.Name)
 					jsonSchemaType.Enum = append(jsonSchemaType.Enum, enumValue.Number)
 				}
@@ -384,11 +407,12 @@ func convertMessageType(curPkg *ProtoPackage, msg *descriptor.DescriptorProto) (
 }
 
 // Converts a proto "ENUM" into a JSON-Schema:
-func convertEnumType(enum *descriptor.EnumDescriptorProto) (jsonschema.Type, error) {
+func convertEnumType(pkgName string, enum *descriptor.EnumDescriptorProto) (jsonschema.Type, error) {
 
 	// Prepare a new jsonschema.Type for our eventual return value:
 	jsonSchemaType := jsonschema.Type{
-		Version: jsonschema.Version,
+		Version:     jsonschema.Version,
+		Description: pkgName + "." + enum.GetName(),
 	}
 
 	// Allow both strings and integers:
@@ -423,61 +447,57 @@ func convertFile(file *descriptor.FileDescriptorProto) ([]*plugin.CodeGeneratorR
 	}
 
 	// Generate standalone ENUMs:
-	if len(file.GetMessageType()) == 0 {
-		pkg, ok := globalPkg.relativelyLookupPackage(file.GetPackage())
-		if !ok {
-			return nil, fmt.Errorf("no such package found: %s", file.GetPackage())
-		}
-		for _, enum := range file.GetEnumType() {
-			jsonSchemaFileName := fmt.Sprintf("%s.schema.json", pkg.name[1:] + "." + enum.GetName())
-			logWithLevel(LOG_INFO, "Generating JSON-schema for stand-alone ENUM (%v) in file [%v] => %v", enum.GetName(), protoFileName, jsonSchemaFileName)
-			enumJsonSchema, err := convertEnumType(enum)
+	for _, enum := range file.GetEnumType() {
+		jsonSchemaFileName := fmt.Sprintf("%s.schema.json", file.GetPackage()+"."+enum.GetName())
+		logWithLevel(LOG_INFO, "Generating JSON-schema for stand-alone ENUM (%v) in file [%v] => %v", enum.GetName(), protoFileName, jsonSchemaFileName)
+		enumJsonSchema, err := convertEnumType(file.GetPackage(), enum)
+		if err != nil {
+			logWithLevel(LOG_ERROR, "Failed to convert %s: %v", protoFileName, err)
+			return nil, err
+		} else {
+			// Marshal the JSON-Schema into JSON:
+			jsonSchemaJSON, err := json.MarshalIndent(enumJsonSchema, "", "    ")
 			if err != nil {
-				logWithLevel(LOG_ERROR, "Failed to convert %s: %v", protoFileName, err)
+				logWithLevel(LOG_ERROR, "Failed to encode jsonSchema: %v", err)
 				return nil, err
 			} else {
-				// Marshal the JSON-Schema into JSON:
-				jsonSchemaJSON, err := json.MarshalIndent(enumJsonSchema, "", "    ")
-				if err != nil {
-					logWithLevel(LOG_ERROR, "Failed to encode jsonSchema: %v", err)
-					return nil, err
-				} else {
-					// Add a response:
-					resFile := &plugin.CodeGeneratorResponse_File{
-						Name:    proto.String(jsonSchemaFileName),
-						Content: proto.String(string(jsonSchemaJSON)),
-					}
-					response = append(response, resFile)
+				// Add a response:
+				resFile := &plugin.CodeGeneratorResponse_File{
+					Name:    proto.String(jsonSchemaFileName),
+					Content: proto.String(string(jsonSchemaJSON)),
 				}
+				response = append(response, resFile)
 			}
 		}
-	} else {
-		// Otherwise process MESSAGES (packages):
-		pkg, ok := globalPkg.relativelyLookupPackage(file.GetPackage())
-		if !ok {
-			return nil, fmt.Errorf("no such package found: %s", file.GetPackage())
-		}
-		for _, msg := range file.GetMessageType() {
-			jsonSchemaFileName := fmt.Sprintf("%s.schema.json", pkg.name[1:] + "." + msg.GetName())
-			logWithLevel(LOG_INFO, "Generating JSON-schema for MESSAGE (%v) in file [%v] => %v", msg.GetName(), protoFileName, jsonSchemaFileName)
-			messageJSONSchema, err := convertMessageType(pkg, msg)
+	}
+	if len(file.GetMessageType()) == 0 {
+		return response, nil
+	}
+	// Otherwise process MESSAGES (packages):
+	pkg, ok := globalPkg.relativelyLookupPackage(file.GetPackage())
+	if !ok {
+		return nil, fmt.Errorf("no such package found: %s", file.GetPackage())
+	}
+	for _, msg := range file.GetMessageType() {
+		jsonSchemaFileName := fmt.Sprintf("%s.schema.json", pkg.name[1:]+"."+msg.GetName())
+		logWithLevel(LOG_INFO, "Generating JSON-schema for MESSAGE (%v) in file [%v] => %v", msg.GetName(), protoFileName, jsonSchemaFileName)
+		messageJSONSchema, err := convertMessageType(pkg, msg)
+		if err != nil {
+			logWithLevel(LOG_ERROR, "Failed to convert %s: %v", protoFileName, err)
+			return nil, err
+		} else {
+			// Marshal the JSON-Schema into JSON:
+			jsonSchemaJSON, err := json.MarshalIndent(messageJSONSchema, "", "    ")
 			if err != nil {
-				logWithLevel(LOG_ERROR, "Failed to convert %s: %v", protoFileName, err)
+				logWithLevel(LOG_ERROR, "Failed to encode jsonSchema: %v", err)
 				return nil, err
 			} else {
-				// Marshal the JSON-Schema into JSON:
-				jsonSchemaJSON, err := json.MarshalIndent(messageJSONSchema, "", "    ")
-				if err != nil {
-					logWithLevel(LOG_ERROR, "Failed to encode jsonSchema: %v", err)
-					return nil, err
-				} else {
-					// Add a response:
-					resFile := &plugin.CodeGeneratorResponse_File{
-						Name:    proto.String(jsonSchemaFileName),
-						Content: proto.String(string(jsonSchemaJSON)),
-					}
-					response = append(response, resFile)
+				// Add a response:
+				resFile := &plugin.CodeGeneratorResponse_File{
+					Name:    proto.String(jsonSchemaFileName),
+					Content: proto.String(string(jsonSchemaJSON)),
 				}
+				response = append(response, resFile)
 			}
 		}
 	}
@@ -494,6 +514,15 @@ func convert(req *plugin.CodeGeneratorRequest) (*plugin.CodeGeneratorResponse, e
 	res := &plugin.CodeGeneratorResponse{}
 	for _, file := range req.GetProtoFile() {
 		for _, msg := range file.GetMessageType() {
+			logWithLevel(LOG_DEBUG, "Loading a message type %s from package %s", msg.GetName(), file.GetPackage())
+			registerType(file.Package, msg)
+		}
+		//enum也记录保存下来
+		for _, enum := range file.GetEnumType() {
+			msg := &descriptor.DescriptorProto{
+				Name:   enum.Name,
+				EnumType: []*descriptor.EnumDescriptorProto{enum,},
+			}
 			logWithLevel(LOG_DEBUG, "Loading a message type %s from package %s", msg.GetName(), file.GetPackage())
 			registerType(file.Package, msg)
 		}
