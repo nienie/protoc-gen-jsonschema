@@ -63,13 +63,21 @@ type ProtoPackage struct {
 	types    map[string]*descriptor.DescriptorProto
 }
 
+//ProtoDescription ...
+type ProtoDescription struct {
+	Package  string                                        `json:"package"`
+	Enums    map[string]jsonschema.Type                   `json:"enums,omitempty"`
+	Messages map[string]jsonschema.Type                   `json:"messages,omitempty"`
+	Services map[string]*descriptor.ServiceDescriptorProto `json:"services,omitempty"`
+}
+
 type LogLevel int
 
 func init() {
 	flag.BoolVar(&allowNullValues, "allow_null_values", false, "Allow NULL values to be validated")
 	flag.BoolVar(&disallowAdditionalProperties, "disallow_additional_properties", false, "Disallow additional properties")
-	flag.BoolVar(&disallowBigIntsAsStrings, "disallow_bigints_as_strings", false, "Disallow bigints to be strings (eg scientific notation)")
-	flag.BoolVar(&debugLogging, "debug", false, "Log debug messages")
+	flag.BoolVar(&disallowBigIntsAsStrings, "disallow_bigints_as_strings", true, "Disallow bigints to be strings (eg scientific notation)")
+	flag.BoolVar(&debugLogging, "debug", true, "Log debug messages")
 }
 
 func logWithLevel(logLevel LogLevel, logFormat string, logParams ...interface{}) {
@@ -275,7 +283,6 @@ func convertField(curPkg *ProtoPackage, desc *descriptor.FieldDescriptorProto, m
 				return nil, fmt.Errorf("no such message type named %s", desc.GetTypeName())
 			}
 			for _, enumDescriptor := range recordType.GetEnumType() {
-
 				// Each one has several values:
 				for _, enumValue := range enumDescriptor.Value {
 					jsonSchemaType.Enum = append(jsonSchemaType.Enum, enumValue.Name)
@@ -375,6 +382,7 @@ func convertMessageType(curPkg *ProtoPackage, msg *descriptor.DescriptorProto) (
 		Version:    jsonschema.Version,
 		//去掉前面的.
 		Description: curPkg.name[1:] + "." + msg.GetName(),
+		Title:       msg.GetName(),
 	}
 
 	// Optionally allow NULL values:
@@ -407,12 +415,12 @@ func convertMessageType(curPkg *ProtoPackage, msg *descriptor.DescriptorProto) (
 }
 
 // Converts a proto "ENUM" into a JSON-Schema:
-func convertEnumType(pkgName string, enum *descriptor.EnumDescriptorProto) (jsonschema.Type, error) {
+func convertEnumType(curPkg *ProtoPackage, enum *descriptor.EnumDescriptorProto) (jsonschema.Type, error) {
 
 	// Prepare a new jsonschema.Type for our eventual return value:
 	jsonSchemaType := jsonschema.Type{
 		Version:     jsonschema.Version,
-		Description: pkgName + "." + enum.GetName(),
+		Description: curPkg.name[1:] + "." + enum.GetName(),
 	}
 
 	// Allow both strings and integers:
@@ -427,6 +435,36 @@ func convertEnumType(pkgName string, enum *descriptor.EnumDescriptorProto) (json
 	}
 
 	return jsonSchemaType, nil
+}
+
+func convertServiceType(curPkg *ProtoPackage, svr *descriptor.ServiceDescriptorProto) (*descriptor.ServiceDescriptorProto, error) {
+	newSvr := descriptor.ServiceDescriptorProto{
+		Name: svr.Name,
+		Options: svr.Options,
+		Method: make([]*descriptor.MethodDescriptorProto, len(svr.Method)),
+	}
+	for i := range svr.Method {
+		inputType := ""
+		if svr.Method[i].InputType != nil {
+			//去掉前面的.
+			inputType = (*svr.Method[i].InputType)[1:]
+		}
+		outputType := ""
+		if svr.Method[i].OutputType != nil {
+			//去掉前面的.
+			outputType = (*svr.Method[i].OutputType)[1:]
+		}
+		newSvr.Method[i] = &descriptor.MethodDescriptorProto{
+			Name:   svr.Method[i].Name,
+			InputType: &inputType,
+			OutputType: &outputType,
+			Options: svr.Method[i].Options,
+			ClientStreaming: svr.Method[i].ClientStreaming,
+			ServerStreaming: svr.Method[i].ServerStreaming,
+		}
+	}
+
+	return &newSvr, nil
 }
 
 // Converts a proto file into a JSON-Schema:
@@ -451,56 +489,95 @@ func convertFile(file *descriptor.FileDescriptorProto) ([]*plugin.CodeGeneratorR
 		return nil, fmt.Errorf("no such package found: %s", file.GetPackage())
 	}
 
+	protoDesc := ProtoDescription{
+		Package: file.GetPackage(),
+		Enums:  make(map[string]jsonschema.Type, 0),
+		Messages: make(map[string]jsonschema.Type, 0),
+		Services: make(map[string]*descriptor.ServiceDescriptorProto, 0),
+	}
+
 	// Generate ENUMs:
 	for _, enum := range file.GetEnumType() {
-		jsonSchemaFileName := fmt.Sprintf("%s.schema.json", file.GetPackage()+"."+enum.GetName())
-		logWithLevel(LOG_INFO, "Generating JSON-schema for stand-alone ENUM (%v) in file [%v] => %v", enum.GetName(), protoFileName, jsonSchemaFileName)
-		enumJsonSchema, err := convertEnumType(file.GetPackage(), enum)
+		//jsonSchemaFileName := fmt.Sprintf("%s.enum.schema.json", file.GetPackage()+"."+enum.GetName())
+		//logWithLevel(LOG_INFO, "Generating JSON-schema for ENUM (%v) in file [%v] => %v", enum.GetName(), protoFileName, jsonSchemaFileName)
+		logWithLevel(LOG_INFO, "Generating JSON-schema for ENUM (%v) => %v", enum.GetName(), protoFileName)
+		enumJsonSchema, err := convertEnumType(pkg, enum)
 		if err != nil {
 			logWithLevel(LOG_ERROR, "Failed to convert %s: %v", protoFileName, err)
 			return nil, err
-		} else {
-			// Marshal the JSON-Schema into JSON:
-			jsonSchemaJSON, err := json.MarshalIndent(enumJsonSchema, "", "    ")
-			if err != nil {
-				logWithLevel(LOG_ERROR, "Failed to encode jsonSchema: %v", err)
-				return nil, err
-			} else {
-				// Add a response:
-				resFile := &plugin.CodeGeneratorResponse_File{
-					Name:    proto.String(jsonSchemaFileName),
-					Content: proto.String(string(jsonSchemaJSON)),
-				}
-				response = append(response, resFile)
-			}
 		}
+		protoDesc.Enums[enum.GetName()] = enumJsonSchema
+		// Marshal the JSON-Schema into JSON:
+		//jsonSchemaJSON, err := json.MarshalIndent(enumJsonSchema, "", "    ")
+		//if err != nil {
+		//	logWithLevel(LOG_ERROR, "Failed to encode jsonSchema: %v", err)
+		//	return nil, err
+		//}
+		//// Add a response:
+		//resFile := &plugin.CodeGeneratorResponse_File{
+		//	Name:    proto.String(jsonSchemaFileName),
+		//	Content: proto.String(string(jsonSchemaJSON)),
+		//}
+		//response = append(response, resFile)
 	}
 
 	//Generate message json schema
 	for _, msg := range file.GetMessageType() {
-		jsonSchemaFileName := fmt.Sprintf("%s.schema.json", pkg.name[1:]+"."+msg.GetName())
-		logWithLevel(LOG_INFO, "Generating JSON-schema for MESSAGE (%v) in file [%v] => %v", msg.GetName(), protoFileName, jsonSchemaFileName)
+		//jsonSchemaFileName := fmt.Sprintf("%s.msg.schema.json", file.GetPackage()+"."+msg.GetName())
+		//logWithLevel(LOG_INFO, "Generating JSON-schema for MESSAGE (%v) in file [%v] => %v", msg.GetName(), protoFileName, jsonSchemaFileName)
+		logWithLevel(LOG_INFO, "Generating JSON-schema for MESSAGE (%v) => %v", msg.GetName(), protoFileName)
 		messageJSONSchema, err := convertMessageType(pkg, msg)
 		if err != nil {
 			logWithLevel(LOG_ERROR, "Failed to convert %s: %v", protoFileName, err)
 			return nil, err
-		} else {
-			// Marshal the JSON-Schema into JSON:
-			jsonSchemaJSON, err := json.MarshalIndent(messageJSONSchema, "", "    ")
-			if err != nil {
-				logWithLevel(LOG_ERROR, "Failed to encode jsonSchema: %v", err)
-				return nil, err
-			} else {
-				// Add a response:
-				resFile := &plugin.CodeGeneratorResponse_File{
-					Name:    proto.String(jsonSchemaFileName),
-					Content: proto.String(string(jsonSchemaJSON)),
-				}
-				response = append(response, resFile)
-			}
 		}
+		protoDesc.Messages[msg.GetName()] = messageJSONSchema
+		//// Marshal the JSON-Schema into JSON:
+		//jsonSchemaJSON, err := json.MarshalIndent(messageJSONSchema, "", "    ")
+		//if err != nil {
+		//	logWithLevel(LOG_ERROR, "Failed to encode jsonSchema: %v", err)
+		//	return nil, err
+		//}
+		//// Add a response:
+		//resFile := &plugin.CodeGeneratorResponse_File{
+		//	Name:    proto.String(jsonSchemaFileName),
+		//	Content: proto.String(string(jsonSchemaJSON)),
+		//}
+		//response = append(response, resFile)
 	}
 
+	//Generate service json schema
+	for _, svr := range file.GetService() {
+		//jsonSchemaFileName := fmt.Sprintf("%s.srv.schema.json", file.GetPackage()+"."+svr.GetName())
+		//logWithLevel(LOG_INFO, "Generating JSON-schema for SERVICE (%v) in file [%v] => %v", svr.GetName(), protoFileName, jsonSchemaFileName)
+		serviceJSONSchema, err := convertServiceType(pkg, svr)
+		if err != nil {
+			logWithLevel(LOG_ERROR, "Failed to convert %s: %v", protoFileName, err)
+			return nil, err
+		}
+		protoDesc.Services[svr.GetName()] = serviceJSONSchema
+
+		//jsonSchemaJSON, err := json.MarshalIndent(serviceJSONSchema, "", "    ")
+		//if err != nil {
+		//	logWithLevel(LOG_ERROR, "Failed to encode jsonSchema: %v", err)
+		//	return nil, err
+		//}
+		//resFile := &plugin.CodeGeneratorResponse_File{
+		//	Name:    proto.String(jsonSchemaFileName),
+		//	Content: proto.String(string(jsonSchemaJSON)),
+		//}
+		//response = append(response, resFile)
+	}
+	jsonSchemaJSON, err := json.MarshalIndent(protoDesc, "", "    ")
+	if err != nil {
+		logWithLevel(LOG_ERROR, "Failed to encode jsonSchema: %v", err)
+		return nil, err
+	}
+	resFile := &plugin.CodeGeneratorResponse_File {
+		Name: proto.String(protoFileName + ".schema.json"),
+		Content: proto.String(string(jsonSchemaJSON)),
+	}
+	response = append(response, resFile)
 	return response, nil
 }
 
