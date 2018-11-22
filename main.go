@@ -66,9 +66,14 @@ type ProtoPackage struct {
 //ProtoDescription ...
 type ProtoDescription struct {
 	Package  string                                        `json:"package"`
-	Enums    map[string]jsonschema.Type                   `json:"enums,omitempty"`
-	Messages map[string]jsonschema.Type                   `json:"messages,omitempty"`
+	Enums    map[string]jsonschema.Type                    `json:"enums,omitempty"`
+	Messages map[string]jsonschema.Type                    `json:"messages,omitempty"`
 	Services map[string]*descriptor.ServiceDescriptorProto `json:"services,omitempty"`
+}
+
+type enumItem struct {
+	Value int32  `json:"value"`
+	Label string `json:"label"`
 }
 
 type LogLevel int
@@ -270,9 +275,10 @@ func convertField(curPkg *ProtoPackage, desc *descriptor.FieldDescriptorProto, m
 					jsonSchemaType.Enum = append(jsonSchemaType.Enum, enumValue.Number)
 				}
 				*/
-
-				jsonSchemaType.Enum = append(jsonSchemaType.Enum, enumValue.Name)
-				jsonSchemaType.Enum = append(jsonSchemaType.Enum, enumValue.Number)
+				jsonSchemaType.Enum = append(jsonSchemaType.Enum, enumItem{
+					Label: enumValue.GetName(),
+					Value: enumValue.GetNumber(),
+				})
 			}
 		}
 
@@ -285,8 +291,10 @@ func convertField(curPkg *ProtoPackage, desc *descriptor.FieldDescriptorProto, m
 			for _, enumDescriptor := range recordType.GetEnumType() {
 				// Each one has several values:
 				for _, enumValue := range enumDescriptor.Value {
-					jsonSchemaType.Enum = append(jsonSchemaType.Enum, enumValue.Name)
-					jsonSchemaType.Enum = append(jsonSchemaType.Enum, enumValue.Number)
+					jsonSchemaType.Enum = append(jsonSchemaType.Enum, enumItem{
+						Label: enumValue.GetName(),
+						Value: enumValue.GetNumber(),
+					})
 				}
 			}
 		}
@@ -430,8 +438,13 @@ func convertEnumType(curPkg *ProtoPackage, enum *descriptor.EnumDescriptorProto)
 
 	// Add the allowed values:
 	for _, enumValue := range enum.Value {
-		jsonSchemaType.Enum = append(jsonSchemaType.Enum, enumValue.Name)
-		jsonSchemaType.Enum = append(jsonSchemaType.Enum, enumValue.Number)
+
+		//jsonSchemaType.Enum = append(jsonSchemaType.Enum, enumValue.Name)
+		//jsonSchemaType.Enum = append(jsonSchemaType.Enum, enumValue.Number)
+		jsonSchemaType.Enum = append(jsonSchemaType.Enum, enumItem{
+			Label: enumValue.GetName(),
+			Value: enumValue.GetNumber(),
+		})
 	}
 
 	return jsonSchemaType, nil
@@ -439,9 +452,9 @@ func convertEnumType(curPkg *ProtoPackage, enum *descriptor.EnumDescriptorProto)
 
 func convertServiceType(curPkg *ProtoPackage, svr *descriptor.ServiceDescriptorProto) (*descriptor.ServiceDescriptorProto, error) {
 	newSvr := descriptor.ServiceDescriptorProto{
-		Name: svr.Name,
+		Name:    svr.Name,
 		Options: svr.Options,
-		Method: make([]*descriptor.MethodDescriptorProto, len(svr.Method)),
+		Method:  make([]*descriptor.MethodDescriptorProto, len(svr.Method)),
 	}
 	for i := range svr.Method {
 		inputType := ""
@@ -455,10 +468,10 @@ func convertServiceType(curPkg *ProtoPackage, svr *descriptor.ServiceDescriptorP
 			outputType = (*svr.Method[i].OutputType)[1:]
 		}
 		newSvr.Method[i] = &descriptor.MethodDescriptorProto{
-			Name:   svr.Method[i].Name,
-			InputType: &inputType,
-			OutputType: &outputType,
-			Options: svr.Method[i].Options,
+			Name:            svr.Method[i].Name,
+			InputType:       &inputType,
+			OutputType:      &outputType,
+			Options:         svr.Method[i].Options,
 			ClientStreaming: svr.Method[i].ClientStreaming,
 			ServerStreaming: svr.Method[i].ServerStreaming,
 		}
@@ -490,8 +503,8 @@ func convertFile(file *descriptor.FileDescriptorProto) ([]*plugin.CodeGeneratorR
 	}
 
 	protoDesc := ProtoDescription{
-		Package: file.GetPackage(),
-		Enums:  make(map[string]jsonschema.Type, 0),
+		Package:  file.GetPackage(),
+		Enums:    make(map[string]jsonschema.Type, 0),
 		Messages: make(map[string]jsonschema.Type, 0),
 		Services: make(map[string]*descriptor.ServiceDescriptorProto, 0),
 	}
@@ -573,8 +586,8 @@ func convertFile(file *descriptor.FileDescriptorProto) ([]*plugin.CodeGeneratorR
 		logWithLevel(LOG_ERROR, "Failed to encode jsonSchema: %v", err)
 		return nil, err
 	}
-	resFile := &plugin.CodeGeneratorResponse_File {
-		Name: proto.String(protoFileName + ".schema.json"),
+	resFile := &plugin.CodeGeneratorResponse_File{
+		Name:    proto.String(protoFileName + ".schema.json"),
 		Content: proto.String(string(jsonSchemaJSON)),
 	}
 	response = append(response, resFile)
